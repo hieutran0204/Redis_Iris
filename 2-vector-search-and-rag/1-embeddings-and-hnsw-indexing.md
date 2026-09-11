@@ -192,7 +192,48 @@ Các trường cần đặc biệt theo dõi:
 
 ---
 
-## 6. Thực hành Lab: Tự tay tạo Index & nạp Vector bằng Python
+## 6. Bảo trì Index (Index Maintenance): Cập nhật, Xóa & Blue-Green Reindexing
+
+Trong môi trường Production thực tế, tri thức của Agent không bao giờ là bất biến: tài liệu cũ bị xóa, chính sách mới được cập nhật, và đôi khi bạn cần nâng cấp mô hình Embedding sang thế hệ mới.
+
+### 6.1. Cập nhật và Xóa Vector tự động
+Một điểm tuyệt vời của RediSearch khi tích hợp với `RedisJSON`:
+* **Khi cập nhật tài liệu**: Khi bạn gọi lệnh `JSON.SET knowledge:doc:101 $.embedding <new_vector>` hoặc cập nhật text `$.title`, RediSearch tự động bắt sự kiện và tái cấu trúc liên kết HNSW cho vector đó ngay lập tức trong RAM.
+* **Khi xóa tài liệu**: Chỉ cần gọi `JSON.DEL knowledge:doc:101`, RediSearch sẽ gỡ bỏ node tương ứng khỏi đồ thị HNSW và cập nhật `num_docs`. Bạn không cần phải gọi thêm bất kỳ lệnh dọn index thủ công nào.
+
+### 6.2. Thách thức lớn: Thay đổi mô hình Embedding (Model Upgrade)
+Giả sử hệ thống đang dùng model cũ `all-MiniLM-L6-v2` ($384$ chiều), nay muốn nâng cấp lên `text-embedding-3-small` ($1536$ chiều):
+* ⚠️ **Nguyên tắc bất biến**: Bạn **KHÔNG THỂ** sửa trực tiếp tham số `DIM` hay `DISTANCE_METRIC` trên một Index đã tồn tại!
+* Nếu xóa index (`FT.DROPINDEX`) để tạo lại từ đầu, toàn bộ hệ thống RAG của Agent sẽ bị ngừng hoạt động (Downtime) trong suốt thời gian embedding lại dữ liệu!
+
+### 6.3. Giải pháp chuẩn Production: Chiến lược Zero-Downtime Blue-Green Reindexing
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant App as AI Agent App
+    participant V1 as Index Cũ (idx:kb:v1 - 384d)
+    participant V2 as Index Mới (idx:kb:v2 - 1536d)
+
+    Note over App,V1: Trạng thái BLUE: Mọi truy vấn đọc/ghi đều trỏ vào v1
+    Note over V2: 1. Tạo index v2 với prefix mới "knowledge:v2:"
+    Note over V2: 2. Background Worker nạp và embed dữ liệu mới vào "knowledge:v2:*"
+    Note over V2: 3. Chờ FT.INFO idx:kb:v2 đạt percent_indexed = 1.0
+    App->>V2: 4. Chuyển hướng traffic (GREEN): Đọc/ghi trỏ sang idx:kb:v2
+    Note over V1: 5. FT.DROPINDEX idx:kb:v1 DD (Xóa index và tài liệu v1 cũ an toàn)
+```
+
+**Các bước thực hiện:**
+1. **Bước 1 (Giữ nguyên v1)**: Index `idx:kb:v1` (prefix `knowledge:v1:`) tiếp tục phục vụ người dùng bình thường.
+2. **Bước 2 (Khởi tạo v2 song song)**: Tạo `idx:kb:v2` với prefix `knowledge:v2:` và cấu hình `DIM 1536`.
+3. **Bước 3 (Re-indexing chạy ngầm)**: Một background worker đọc tài liệu gốc, trích xuất embedding 1536 chiều bằng model mới và lưu vào các key `knowledge:v2:*`.
+4. **Bước 4 (Kiểm tra sức khỏe)**: Chạy `FT.INFO idx:kb:v2` cho đến khi `percent_indexed == 1.0` và `indexing == 0`.
+5. **Bước 5 (Cutover - Đổi hướng)**: Cập nhật biến cấu hình ứng dụng `ACTIVE_VECTOR_INDEX = "idx:kb:v2"` và `DOC_PREFIX = "knowledge:v2:"` (không downtime).
+6. **Bước 6 (Dọn dẹp)**: Khi v2 đã chạy ổn định, chạy lệnh `FT.DROPINDEX idx:kb:v1 DD` để giải phóng RAM của index cũ.
+
+---
+
+## 7. Thực hành Lab: Tự tay tạo Index & nạp Vector bằng Python
 
 Chúng ta sẽ sử dụng thư viện `sentence-transformers` (chạy hoàn toàn offline miễn phí, vector 384 chiều) kết hợp với `redis-py` để xây dựng một kho tri thức cho Agent.
 
@@ -320,16 +361,17 @@ py .\2-vector-search-and-rag\code-examples\1_embeddings_and_hnsw.py
 
 ---
 
-## 7. Tổng kết & Bước tiếp theo
+## 8. Tổng kết & Bước tiếp theo
 
 Trong bài này, bạn đã nắm vững nền tảng kiến trúc của **Vector Database trên Redis**:
 * Bản chất của Vector Embedding là các chuỗi byte nhị phân `FLOAT32`.
 * Tại sao **HNSW** là tiêu chuẩn vàng cho AI Agent nhờ tốc độ tìm kiếm $\mathcal{O}(\log N)$.
 * Cách tinh chỉnh bộ 3 siêu tham số `M`, `efConstruction`, và `efRuntime` để kiểm soát dung lượng RAM và Recall.
-* Cách tạo Index trên tài liệu `RedisJSON` và theo dõi sức khỏe index qua `FT.INFO`.
+* Cách tạo Index trên tài liệu `RedisJSON`, bảo trì cập nhật/xóa vector và chiến lược Zero-Downtime Blue-Green Reindexing.
+* Cách theo dõi sức khỏe index qua `FT.INFO`.
 
 👉 Ở bài tiếp theo, chúng ta sẽ bước sang kỹ thuật truy vấn cốt lõi: **[2.2 — Vector Similarity & Hybrid Search](./2-vector-similarity-and-hybrid-search.md)** — kết hợp Vector Search cùng Full-Text & Tag Filtering để tạo ra Pipeline RAG siêu chuẩn xác!
 
 ---
 
-*← Trước: [1.5 - Distributed Locks & Connection Pooling](../1-redis-foundations-and-memory/5-distributed-locks-and-pooling.md) | Tiếp theo: [2.2 - Vector Similarity & Hybrid Search](./2-vector-similarity-and-hybrid-search.md) →*
+*← Trước: [2.0 - Chunking & Preprocessing](./0-chunking-and-preprocessing.md) | Tiếp theo: [2.2 - Vector Similarity & Hybrid Search](./2-vector-similarity-and-hybrid-search.md) →*

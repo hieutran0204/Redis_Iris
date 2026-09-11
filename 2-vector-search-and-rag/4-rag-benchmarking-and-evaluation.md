@@ -1,4 +1,4 @@
-# 3. RAG Benchmarking & Evaluation — Đo lường Chất lượng Retrieval
+# 2.4 — RAG Benchmarking & Evaluation — Đo lường Chất lượng Retrieval
 
 > 🚧 **Sắp ra mắt** — Bài này sẽ đi sâu vào:
 > - Tại sao cần đánh giá RAG: "Cảm giác tốt" không bằng số liệu — Agent trả lời đúng nhưng vì lý do sai.
@@ -8,4 +8,4 @@
 > - **LangCache Hit-Rate Dashboard**: Đo % câu hỏi được phục vụ từ cache vs gọi LLM thật.
 > - Tích hợp với `ragas` (framework đánh giá RAG open-source) + export metrics sang Grafana.
 
-*← Quay lại: [2-vector-similarity-and-hybrid-search.md](./2-vector-similarity-and-hybrid-search.md)*
+*← Trước: [2.3 - RAG Pipeline & Reranking](./3-rag-pipeline-and-reranking.md) | Tiếp theo: [2.5 - Vector Migration Guide](./5-vector-migration-guide.md) →*

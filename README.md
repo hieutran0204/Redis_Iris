@@ -52,10 +52,12 @@ Xây dựng Vector Database tốc độ cao và tối ưu hóa RAG Pipeline cho 
 
 | # | Nội dung | Trạng thái |
 |---|-----|-----------|
+| 0 | [Chunking & Preprocessing — Tiền xử lý dữ liệu cho Vector Search](./2-vector-search-and-rag/0-chunking-and-preprocessing.md) | ✅ Hoàn thành |
 | 1 | [Embeddings & HNSW Indexing — Xây dựng Vector DB trên Redis](./2-vector-search-and-rag/1-embeddings-and-hnsw-indexing.md) | ✅ Hoàn thành |
 | 2 | [Vector Similarity & Hybrid Search — Tìm kiếm ngữ nghĩa cho RAG](./2-vector-search-and-rag/2-vector-similarity-and-hybrid-search.md) | 🚧 Sắp ra mắt |
-| 3 | [RAG Benchmarking & Evaluation — Đo lường Recall@K & chất lượng Retrieval](./2-vector-search-and-rag/3-rag-benchmarking-and-evaluation.md) | 🚧 Sắp ra mắt |
-| 4 | [Vector Migration Guide — Import Embeddings từ Pinecone / Qdrant / PGVector](./2-vector-search-and-rag/4-vector-migration-guide.md) | 🚧 Sắp ra mắt |
+| 3 | [RAG Pipeline & Reranking — Ráp nối Hệ thống RAG Thực chiến](./2-vector-search-and-rag/3-rag-pipeline-and-reranking.md) | ✅ Hoàn thành |
+| 4 | [RAG Benchmarking & Evaluation — Đo lường Recall@K & chất lượng Retrieval](./2-vector-search-and-rag/4-rag-benchmarking-and-evaluation.md) | 🚧 Sắp ra mắt |
+| 5 | [Vector Migration Guide — Import Embeddings từ Pinecone / Qdrant / PGVector](./2-vector-search-and-rag/5-vector-migration-guide.md) | 🚧 Sắp ra mắt |
 
 ---
 

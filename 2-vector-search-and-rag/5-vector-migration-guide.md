@@ -1,4 +1,4 @@
-# 4. Vector Migration Guide — Chuyển dữ liệu Embeddings sang Redis
+# 2.5 — Vector Migration Guide — Chuyển dữ liệu Embeddings sang Redis
 
 > 🚧 **Sắp ra mắt** — Bài này sẽ đi sâu vào:
 > - **Tại sao migrate sang Redis Vector?**: So sánh chi phí thực tế: Pinecone Serverless vs Redis Cloud vs tự host Redis Stack.
@@ -8,4 +8,4 @@
 > - **Chiến lược Zero-downtime Migration**: Chạy dual-write → Gradual traffic shift → Cutover.
 > - Script Python tự động hóa quá trình migration (~200 dòng, có sẵn trong thư mục `/scripts`).
 
-*← Quay lại: [3-rag-benchmarking-and-evaluation.md](./3-rag-benchmarking-and-evaluation.md)*
+*← Trước: [2.4 - RAG Benchmarking & Evaluation](./4-rag-benchmarking-and-evaluation.md) | Chương kế tiếp: [Chương 3 — Redis Iris AI Platform](../3-redis-iris-platform/1-redis-langcache-semantic-cache.md) →*
