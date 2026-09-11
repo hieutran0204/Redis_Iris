@@ -61,13 +61,13 @@ Pinecone quản lý dữ liệu theo dạng **Namespaces** và **IDs**. Mỗi ve
 
 ### 2.2. Chiến lược Trích xuất (Export) Phân trang từ Pinecone
 
-Do Pinecone giới hạn số lượng vector trả về trong một lần gọi API (tối đa 100 vectors cho `fetch`), ta sử dụng API `list_paginated` để quét qua toàn bộ ID theo namespace:
+Do Pinecone giới hạn số lượng vector trả về trong một lần gọi API (tối đa 100–200 vectors cho `fetch`), ta sử dụng API generator **`index.list()`** của Pinecone SDK — đây là cơ chế tự động phân trang (Auto-pagination Generator) chính thức giúp lặp qua toàn bộ danh sách Vector IDs trong một namespace một cách an toàn và đầy đủ:
 
 ```mermaid
 graph LR
-    P[Pinecone Index] -- "list_paginated(limit=100)" --> IDs["Danh sách Vector IDs"]
+    P[Pinecone Index] -- "index.list(limit=batch_size)<br/>Auto-pagination Generator" --> IDs["Từng lô Vector IDs (List[str])"]
     IDs -- "fetch(ids=batch)" --> Vecs["Dữ liệu Vector + Metadata"]
-    Vecs -- "Bulk Pipeline JSON.SET / HSET" --> R[Redis Vector DB]
+    Vecs -- "Bulk Pipeline JSON.SET" --> R[Redis Vector DB]
 ```
 
 ### 2.3. Mã nguồn Python: Pinecone $\to$ Redis Migrator
@@ -92,7 +92,7 @@ def migrate_pinecone_to_redis(
     redis_url: str = "redis://localhost:6379",
     redis_index_name: str = "idx:migrated_pinecone",
     vector_dim: int = 1536,
-    batch_size: int = 200
+    batch_size: int = 100
 ):
     # 1. Khởi tạo client
     pc = Pinecone(api_key=pinecone_api_key)
@@ -124,14 +124,14 @@ def migrate_pinecone_to_redis(
         )
         print(f"[+] Đã tạo Index '{redis_index_name}' thành công.")
 
-    # 3. Quét ID và tải dữ liệu theo từng lô (Pagination)
+    # 3. Quét ID qua Generator index.list() (Auto-pagination chuẩn của Pinecone SDK)
     total_migrated = 0
     start_time = time.time()
 
-    for id_batch in p_index.list_paginated(namespace=pinecone_namespace, limit=batch_size):
-        vector_ids = [v.id for v in id_batch.vectors]
+    # index.list() tự động tải các trang ID tiếp theo ngầm định, trả về từng List[str] ID
+    for vector_ids in p_index.list(namespace=pinecone_namespace, limit=batch_size):
         if not vector_ids:
-            break
+            continue
 
         # Tải chi tiết vectors kèm metadata
         fetch_res = p_index.fetch(ids=vector_ids, namespace=pinecone_namespace)
@@ -156,6 +156,11 @@ def migrate_pinecone_to_redis(
     elapsed = time.time() - start_time
     print(f"\n✅ Hoàn tất migration từ Pinecone: {total_migrated} vectors trong {elapsed:.2f}s ({(total_migrated/max(elapsed, 1e-3)):.1f} docs/sec)!")
 ```
+
+> [!TIP]
+> **Phân biệt `index.list()` vs `index.list_paginated()` trong Pinecone SDK**:
+> * **`index.list()`**: Là một Python generator tự động quản lý `pagination_token` ở phía dưới. Bạn chỉ cần dùng vòng lặp `for id_batch in p_index.list(...)` rất đơn giản và an toàn.
+> * **`index.list_paginated()`**: Trả về duy nhất một object `ListResponse` của trang hiện tại. Nếu dùng phương thức này, bạn bắt buộc phải viết vòng lặp `while True` thủ công và tự gán `pagination_token = res.pagination.next` cho đến khi hết trang.
 
 ---
 
