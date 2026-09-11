@@ -204,7 +204,7 @@ graph TD
     Ragas["Framework Ragas"] --> CR["Context Recall (Đo tầng Redis)<br/>Có thu hồi đủ thông tin cần thiết không?"]
     Ragas --> CP["Context Precision (Đo tầng Redis/Rerank)<br/>Tỷ lệ chunk rác lẫn vào context là bao nhiêu?"]
     Ragas --> F["Faithfulness (Đo tầng LLM)<br/>Câu trả lời có 100% dựa vào context không? (Chống ảo giác)"]
-    Ragas --> AR["Answer Relevance (Đo tầng LLM)<br/>Câu trả lời có giải quyết đúng thắc mắc của User không?"]
+    Ragas --> AR["Answer Relevancy (Đo tầng LLM)<br/>Câu trả lời có giải quyết đúng thắc mắc của User không?"]
 ```
 
 ### Cách cài đặt và sử dụng Ragas cơ bản:
@@ -215,7 +215,12 @@ pip install ragas datasets langchain-openai
 
 ```python
 from ragas import evaluate
-from ragas.metrics import context_recall, context_precision, faithfulness, answer_relevance
+from ragas.metrics import (
+    context_recall, 
+    context_precision, 
+    faithfulness, 
+    answer_relevancy  # Lưu ý: "answer_relevancy" (có 'cy' ở cuối)
+)
 from datasets import Dataset
 
 # Chuẩn bị dữ liệu đánh giá
@@ -229,12 +234,15 @@ data = {
 dataset = Dataset.from_dict(data)
 results = evaluate(
     dataset,
-    metrics=[context_recall, context_precision, faithfulness, answer_relevance]
+    metrics=[context_recall, context_precision, faithfulness, answer_relevancy]
 )
 
 print(results)
-# Output: {'context_recall': 1.0000, 'context_precision': 1.0000, 'faithfulness': 1.0000, 'answer_relevance': 0.9821}
+# Output: {'context_recall': 1.0000, 'context_precision': 1.0000, 'faithfulness': 1.0000, 'answer_relevancy': 0.9821}
 ```
+
+> [!NOTE]
+> Trong các phiên bản Ragas mới nhất (0.2+), hệ thống hỗ trợ thêm các class metric chuyên biệt (`from ragas.metrics import AnswerRelevancy, Faithfulness`). Các hàm độc lập trên vẫn được hỗ trợ song song cho các script đánh giá nhanh.
 
 ---
 
@@ -381,8 +389,10 @@ def evaluate_retrieval(ef_runtime: int = 10, top_k_max: int = 5) -> Dict[str, An
         q_vec = model.encode(query_text, normalize_embeddings=True)
         q_bytes = np.array(q_vec, dtype=np.float32).tobytes()
 
-        # Cú pháp KNN có chỉ định EF_RUNTIME
-        query_str = f"(*)=>[KNN {top_k_max} @embedding $BLOB EF_RUNTIME {ef_runtime} AS score]"
+        # Cú pháp KNN chuẩn với tham số runtime $EF_RUNTIME:
+        # Lưu ý: $EF_RUNTIME bắt buộc phải nằm trong khối thuộc tính sau dấu '=>' thứ 2:
+        # (*)=>[KNN <k> @embedding $BLOB AS score]=>{$EF_RUNTIME: $EF}
+        query_str = f"(*)=>[KNN {top_k_max} @embedding $BLOB AS score]=>{{$EF_RUNTIME: $EF}}"
         q = (
             Query(query_str)
             .sort_by("score", asc=True)
@@ -391,7 +401,7 @@ def evaluate_retrieval(ef_runtime: int = 10, top_k_max: int = 5) -> Dict[str, An
         )
 
         t0 = time.perf_counter()
-        res = client.ft(INDEX_NAME).search(q, query_params={"BLOB": q_bytes})
+        res = client.ft(INDEX_NAME).search(q, query_params={"BLOB": q_bytes, "EF": ef_runtime})
         t1 = time.perf_counter()
         
         latencies.append((t1 - t0) * 1000)  # Mili-giây
