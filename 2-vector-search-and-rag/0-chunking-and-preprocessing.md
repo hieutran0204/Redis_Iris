@@ -34,6 +34,16 @@ graph TD
     E --> F[("Lưu vào Redis Vector Database")]
 ```
 
+### 1.2. Phân biệt cốt lõi: "Tokens" vs "Characters" (Đặc biệt với tiếng Việt)
+Một sai lầm kinh điển của người mới tiếp cận RAG là **đánh đồng số ký tự (characters) với số token**:
+* **Tiếng Anh**: Trung bình $1 \text{ token} \approx 4 \text{ ký tự}$ (khoảng $0.75$ từ). Ví dụ một chunk 500 ký tự tiếng Anh xấp xỉ $125$ tokens.
+* **Tiếng Việt có dấu**: Do các thuật toán phân mảnh từ con (BPE - Byte Pair Encoding của OpenAI hay WordPiece) được huấn luyện chủ yếu trên kho ngữ liệu tiếng Anh, các ký tự tiếng Việt có dấu thường bị tách thành nhiều byte UTF-8 và subwords.
+  * Tỷ lệ thực tế: $1 \text{ token} \approx 1.5 - 2.5 \text{ ký tự}$ (thậm chí 1 từ ghép tiếng Việt như *"khuyến khích"* có thể tiêu tốn tới $4 - 6 \text{ tokens}$!).
+  * **Hệ quả**: Nếu bạn cấu hình chunk 1000 ký tự tiếng Việt, tài liệu có thể nở ra thành $500 - 700 \text{ tokens}$. Với mô hình giới hạn 256 tokens như `all-MiniLM-L6-v2`, tài liệu của bạn sẽ bị cắt cụt quá nửa mà bạn không hề hay biết!
+
+> [!IMPORTANT]
+> Trong môi trường Production, **hãy luôn đếm token bằng chính Tokenizer của mô hình đó** (ví dụ dùng thư viện `tiktoken` cho OpenAI, hoặc `AutoTokenizer` của HuggingFace cho mô hình open-source) thay vì chỉ đo độ dài chuỗi ký tự bằng `len(text)`.
+
 ---
 
 ## 2. Các chiến lược Chunking cốt lõi
@@ -87,9 +97,12 @@ Khi lưu chunk vào Redis, **không bao giờ chỉ lưu nội dung thuần túy
   "created_at": 1725960000,
   "chunk_index": 3,
   "total_chunks": 8,
-  "embedding": [0.023, -0.158, 0.891, "..."]
+  "embedding": [0.0234, -0.1582, 0.8911, 0.0453]
 }
 ```
+
+> [!NOTE]
+> Trong JSON lưu trên Redis thật, mảng `embedding` sẽ chứa đầy đủ 384, 768 hoặc 1536 phần tử số thực float (tùy model). Tuyệt đối không để lẫn ký tự chuỗi như `"..."` vào mảng số để tránh gây lỗi phân tích cú pháp (JSON parsing error).
 
 * Nhờ có `category`, `access_level`, bạn có thể thực hiện **Hybrid Search** trên RediSearch: *"Chỉ tìm kiếm vector trong các chunk có `access_level == 'internal'` và `category == 'hr_policy'`"*.
 
@@ -97,7 +110,10 @@ Khi lưu chunk vào Redis, **không bao giờ chỉ lưu nội dung thuần túy
 
 ## 4. Thực hành Code mẫu Python: Chuẩn hóa Pipeline Chunking
 
-Dưới đây là đoạn code thực chiến minh họa cách tiền xử lý văn bản, chia chunk có overlap và chuẩn bị payload hoàn chỉnh để nạp vào Redis:
+Dưới đây là đoạn code thực chiến minh họa:
+1. Tiền xử lý, dọn sạch văn bản.
+2. Hàm `recursive_chunk_text` tính theo **ký tự** (`chars`) kèm cơ chế phòng vệ chống lặp vô hạn (Infinite Loop Guard).
+3. Đếm token thực tế bằng `tiktoken` để kiểm soát dung lượng chunk trước khi gọi API Embedding.
 
 ```python
 import re
@@ -112,20 +128,21 @@ def clean_text(text: str) -> str:
 
 def recursive_chunk_text(
     text: str, 
-    chunk_size: int = 500, 
-    chunk_overlap: int = 50
+    chunk_size_chars: int = 500, 
+    chunk_overlap_chars: int = 50
 ) -> List[str]:
     """
     Chia nhỏ văn bản đệ quy theo đoạn văn, câu và từ kèm vùng gối đầu overlap.
+    Lưu ý: Hàm này tính toán ranh giới dựa trên SỐ KÝ TỰ (characters).
     """
     text = clean_text(text)
-    if len(text) <= chunk_size:
+    if len(text) <= chunk_size_chars:
         return [text]
 
     chunks = []
     start = 0
     while start < len(text):
-        end = start + chunk_size
+        end = start + chunk_size_chars
         
         # Nếu chưa đến cuối văn bản, tìm điểm ngắt tự nhiên gần nhất (dấu chấm hoặc xuống dòng)
         if end < len(text):
@@ -141,10 +158,26 @@ def recursive_chunk_text(
         if chunk:
             chunks.append(chunk)
         
-        # Dịch chuyển start bước tiếp theo có tính đến overlap
-        start = end - chunk_overlap if end < len(text) else len(text)
+        # BẢO VỆ TIẾN ĐỘ VÒNG LẶP:
+        # Nếu break_point quá gần start, (end - chunk_overlap_chars) có thể <= start.
+        # Sử dụng max(start + 1, ...) đảm bảo con trỏ start luôn tiến lên, chống treo vô hạn!
+        if end < len(text):
+            start = max(start + 1, end - chunk_overlap_chars)
+        else:
+            start = len(text)
 
     return chunks
+
+# --- Đo lường Token thực tế bằng Tiktoken (Production Best Practice) ---
+def count_tokens(text: str, model_encoding: str = "cl100k_base") -> int:
+    """Đếm số token chính xác của chuỗi văn bản."""
+    try:
+        import tiktoken
+        enc = tiktoken.get_encoding(model_encoding)
+        return len(enc.encode(text))
+    except ImportError:
+        # Ước lượng thô nếu chưa cài tiktoken: 1 token ~ 2 ký tự tiếng Việt
+        return len(text) // 2
 
 # Demo thử nghiệm
 raw_document = """
@@ -157,9 +190,10 @@ Mật khẩu quản trị phải có độ dài tối thiểu 16 ký tự, bao g
 Trong trường hợp phát hiện truy cập bất thường từ IP lạ, Redis Sentinel sẽ tự động kích hoạt chế độ cách ly và gửi thông báo khẩn cấp tới kênh Slack của đội ngũ Security Ops.
 """
 
-chunks = recursive_chunk_text(raw_document, chunk_size=200, chunk_overlap=30)
+chunks = recursive_chunk_text(raw_document, chunk_size_chars=200, chunk_overlap_chars=30)
 for idx, c in enumerate(chunks):
-    print(f"--- CHUNK {idx + 1} ({len(c)} chars) ---")
+    token_est = count_tokens(c)
+    print(f"--- CHUNK {idx + 1} ({len(c)} chars | ~{token_est} tokens) ---")
     print(c)
 ```
 
