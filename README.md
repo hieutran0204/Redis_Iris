@@ -66,10 +66,12 @@ Khai thác sâu bộ công cụ Redis Iris — nền tảng chuyên biệt cho k
 
 | # | Nội dung | Trạng thái |
 |---|-----|-----------|
+| 0 | [Why Redis Iris? — Động cơ Ngữ cảnh & Bộ nhớ cho AI Agents](./3-redis-iris-platform/0-why-iris-context-engine.md) | ✅ Hoàn thành |
 | 1 | [Redis LangCache — Semantic Caching giảm 90% chi phí token LLM](./3-redis-iris-platform/1-redis-langcache-semantic-cache.md) | 🚧 Sắp ra mắt |
 | 2 | [Agent Memory Architecture — Phân tầng Working Memory & Long-term Vector Memory](./3-redis-iris-platform/2-agent-memory-architecture.md) | 🚧 Sắp ra mắt |
-| 3 | [Context Retriever — Kết nối dữ liệu nghiệp vụ thời gian thực vào Agent](./3-redis-iris-platform/3-context-retriever.md) | 🚧 Sắp ra mắt |
-| 4 | [Redis Flex & RDI — Auto-Tiering RAM+SSD & Change Data Capture](./3-redis-iris-platform/4-redis-flex-tiering-ram-ssd.md) | 🚧 Sắp ra mắt |
+| 3 | [Context Retriever — Kết nối dữ liệu nghiệp vụ thời gian thực vào Agent qua MCP](./3-redis-iris-platform/3-context-retriever.md) | 🚧 Sắp ra mắt |
+| 4 | [Redis Flex — Auto-Tiering RAM + SSD cho Quy mô Lớn](./3-redis-iris-platform/4-redis-flex-tiering-ram-ssd.md) | 🚧 Sắp ra mắt |
+| 5 | [Redis Data Integration (RDI) — Real-time CDC từ PostgreSQL/MySQL](./3-redis-iris-platform/5-redis-data-integration-rdi.md) | ✅ Hoàn thành |
 
 ---
 

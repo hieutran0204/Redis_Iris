@@ -1,19 +1,17 @@
-# 4. Redis Flex & RDI — Quản lý Dữ liệu Quy mô Lớn cho Agent Fleet
+<!--
+name: 4-redis-flex-tiering-ram-ssd.md
+description: In-depth guide to Redis Flex, Auto-Tiering across RAM and NVMe SSD, managing hundred-million-scale vector datasets, and reducing infrastructure costs by up to 80% without sacrificing microsecond query performance.
+-->
+
+# 3.4 — Redis Flex — Auto-Tiering RAM & NVMe SSD cho Quy mô Lớn
 
 > 🚧 **Sắp ra mắt** — Bài này sẽ đi sâu vào:
+> - **Bài toán Chi phí**: Agent Fleet tích lũy hàng chục triệu vector memories theo thời gian $\to$ hàng trăm GB dữ liệu $\to$ chi phí RAM vật lý tăng vọt không kiểm soát.
+> - **Nguyên lý Hoạt động của Redis Flex**: Tự động phân loại dữ liệu "nóng" (Hot Data trên RAM với độ trễ nanosecond) và dữ liệu "lạnh" (Cold Data trên NVMe SSD với độ trễ microsecond) dựa trên tần suất truy cập.
+> - **Quy luật 80/20 trong Vector Retrieval**: Tại sao đa phần các truy vấn của Agent chỉ tập trung vào $20\%$ dữ liệu gần nhất, và cách Redis Flex tận dụng đặc điểm này để cắt giảm $80\%$ chi phí phần cứng.
+> - **Cấu hình & Triển khai**: Kích hoạt Auto-Tiering qua Redis Enterprise / Redis Cloud console.
+> - **Benchmark Thực nghiệm**: So sánh Throughput & Latency giữa Pure RAM vs Redis Flex Tiered Storage.
 
-## Phần A: Redis Flex — Auto-Tiering RAM + SSD
+---
 
-> - **Bài toán**: Agent Fleet tích lũy hàng triệu vector memories theo thời gian → 100GB+ dữ liệu → RAM đắt tiền.
-> - **Redis Flex hoạt động thế nào**: Tự động phân loại hot data (RAM, nanosecond) và cold data (NVMe SSD, microsecond) dựa trên access frequency.
-> - **Khi nào cần Redis Flex**: Khi vector index > 10GB và đa số query chỉ tập trung vào ~20% data gần nhất (80/20 rule).
-> - Cấu hình `crdb-cli` / Redis Cloud console để bật Tiering.
-> - Đánh giá hiệu năng: Benchmark throughput & latency khi có và không có Flex.
-
-## Phần B: Redis Data Integration (RDI) — Change Data Capture
-
-> - **CDC là gì**: Cơ chế lắng nghe transaction log của DB nguồn (PostgreSQL WAL, MySQL binlog) và propagate thay đổi sang Redis gần như realtime (~vài giây độ trễ).
-> - Cài đặt RDI pipeline: `source connector` (Debezium) → `transformation` → `target Redis stream`.
-> - Đảm bảo Agent luôn làm việc trên dữ liệu mới nhất, không phải snapshot cũ trong cache.
-
-*← Quay lại: [3-context-retriever.md](./3-context-retriever.md)*
+*← Bài trước: [3.3 - Context Retriever](./3-context-retriever.md) | Tiếp theo: [3.5 - Redis Data Integration (RDI)](./5-redis-data-integration-rdi.md) →*
