@@ -93,13 +93,13 @@ graph LR
     Iris["Redis Iris Platform"] --> P1["1. LangCache<br/>(Giảm 90% chi phí token LLM qua Semantic Cache)"]
     Iris --> P2["2. Agent Memory<br/>(Phân tầng Working Memory & Long-term Episodic Memory)"]
     Iris --> P3["3. Context Retriever<br/>(Biến cấu trúc nghiệp vụ thành Tool chuẩn MCP)"]
-    Iris --> P4["4. Redis Flex<br/>(Auto-Tiering RAM + SSD giảm 80% chi phí lưu trữ)"]
-    Iris --> P5["5. Data Integration (RDI)<br/>(Đồng bộ CDC từ PostgreSQL/MySQL thời gian thực < 100ms)"]
+    Iris --> P4["4. Redis Flex<br/>(Auto-Tiering RAM + SSD giảm 75–80% chi phí lưu trữ)"]
+    Iris --> P5["5. Data Integration (RDI)<br/>(Đồng bộ CDC từ PostgreSQL/MySQL độ trễ sub-second*)"]
 ```
 
 ### 1. Redis LangCache (Semantic Cache)
 * **Vấn đề**: Các Agent thường xuyên gửi các prompt truy vấn tương tự hoặc trùng lặp ngữ nghĩa sang OpenAI/Claude, gây tốn kém chi phí và chậm trễ.
-* **Giải pháp**: Tận dụng Vector Search với ngưỡng khoảng cách cực nhỏ ($R \le 0.1$) để tạo tầng **Cache Ngữ nghĩa**. Nếu câu hỏi mới có cùng ý nghĩa với câu hỏi trước đó, trả lời ngay tức thì trong $2\text{ms}$ với chi phí token bằng $0$!
+* **Giải pháp**: Tận dụng Vector Search với ngưỡng khoảng cách / tương đồng ngữ nghĩa linh hoạt (ví dụ cấu hình khoảng cách $R \le 0.1$ tùy chỉnh theo từng độ nhạy nghiệp vụ) để tạo tầng **Cache Ngữ nghĩa**. Nếu câu hỏi mới có cùng ý nghĩa với câu hỏi trước đó, trả lời ngay tức thì trong $2\text{ms}$ với chi phí token bằng $0$!
 
 ### 2. Redis Agent Memory
 * **Vấn đề**: Các framework như LangChain/CrewAI có sẵn memory class nhưng chỉ lưu trên RAM máy chạy code (mất sạch khi container restart) hoặc lưu file cục bộ không hỗ trợ multi-agent.
@@ -110,12 +110,12 @@ graph LR
 * **Giải pháp**: Định nghĩa schema thực thể nghiệp vụ (Khách hàng, Hóa đơn, Vé bảo hành) một lần duy nhất, Context Retriever tự động sinh ra các Tool chuẩn **Model Context Protocol (MCP)** để bất kỳ Agent nào cũng có thể tra cứu và điều hướng tự động.
 
 ### 4. Redis Flex (Auto-Tiering RAM + SSD)
-* **Vấn đề**: Lưu trữ hàng chục triệu vector memories hoàn toàn trên RAM sẽ tiêu tốn ngân sách hạ tầng khổng lồ.
-* **Giải pháp**: Công nghệ phân tầng tự động lưu trữ các vector "nóng" (thường xuyên truy cập) trên RAM và tự động đẩy các vector "lạnh" xuống ổ cứng siêu tốc NVMe SSD, giúp **giảm tới 80% chi phí phần cứng** mà vẫn đảm bảo độ trễ truy vấn ở mức micro-giây.
+* **Vấn đề**: Lưu trữ hàng trăm Gigabytes lịch sử hội thoại, trạng thái Agent và dữ liệu vận hành hoàn toàn trên RAM sẽ tiêu tốn ngân sách hạ tầng khổng lồ.
+* **Giải pháp**: Công nghệ phân tầng tự động lưu trữ dữ liệu "nóng" (thường xuyên truy cập) trên RAM và tự động đẩy dữ liệu "lạnh" xuống ổ cứng siêu tốc NVMe SSD, giúp **giảm từ 75% đến 80% chi phí hạ tầng** (theo số liệu từ các báo cáo thử nghiệm của Redis) mà vẫn đảm bảo độ trễ truy vấn ở mức micro-giây.
 
 ### 5. Redis Data Integration (RDI)
 * **Vấn đề**: Dữ liệu nghiệp vụ liên tục thay đổi trên Postgres/MySQL nhưng vector cache bị lỗi thời.
-* **Giải pháp**: Lắng nghe trực tiếp luồng Write-Ahead Log (WAL) qua Change Data Capture (CDC), tự động đồng bộ mọi thay đổi sang Redis trong vòng **dưới 100 mili-giây** mà không gây ảnh hưởng tới hiệu năng của DB chính.
+* **Giải pháp**: Lắng nghe trực tiếp luồng Write-Ahead Log (WAL) qua Change Data Capture (CDC), tự động đồng bộ mọi thay đổi sang Redis ở cấp độ sub-second (*tham khảo thực tế thường dưới 100ms tùy cấu hình hạ tầng mạng và tải database*) mà không gây ảnh hưởng tới hiệu năng của DB chính.
 
 ---
 
@@ -125,10 +125,12 @@ graph LR
 | :--- | :--- | :--- |
 | **Quản lý Bộ nhớ Agent** | Tự thiết kế JSON schema, tự quản lý TTL, tự viết code tìm kiếm vector. | Có sẵn **Agent Memory Service** hỗ trợ tự động tóm tắt, trích xuất sự kiện và phân tầng session. |
 | **Semantic Caching** | Tự viết script so sánh vector cosine và tự quản lý invalidate cache. | Dùng **Redis LangCache** cấu hình sẵn các thuật toán eviction, hit-ratio tracking và dashboard giám sát. |
-| **Đồng bộ Dữ liệu RDBMS** | Phải viết cron-job Python, đối mặt với race condition và trễ dữ liệu. | Dùng **RDI (Log-based CDC)** Declarative YAML, tự động bắt INSERT/UPDATE/DELETE trong <100ms. |
+| **Đồng bộ Dữ liệu RDBMS** | Phải viết cron-job Python, đối mặt với race condition và trễ dữ liệu. | Dùng **RDI (Log-based CDC)** Declarative YAML, tự động bắt INSERT/UPDATE/DELETE gần như tức thì (<100ms tham khảo*). |
 | **Chuẩn kết nối Tool** | Tự viết custom REST API hoặc custom LangChain tools cho từng bảng. | Hỗ trợ gốc giao thức **Model Context Protocol (MCP)**, cắm là chạy với Claude Desktop, Cursor, LangGraph. |
-| **Chi phí Lưu trữ Vector** | Toàn bộ vector phải nằm trên RAM đắt đỏ. | Tận dụng **Redis Flex**, kết hợp RAM + NVMe SSD giảm 80% chi phí. |
+| **Chi phí Lưu trữ Dữ liệu Lớn** | Toàn bộ dữ liệu trạng thái, session lịch sử phải nằm trên RAM đắt đỏ. | Tận dụng **Redis Flex**, kết hợp RAM + NVMe SSD giảm 75–80% chi phí. |
 | **Thời gian Go-to-Market** | Tốn 2 – 3 tháng phát triển hạ tầng và xử lý lỗi phân tán. | **Rút ngắn còn vài ngày**, tập trung 100% vào logic nghiệp vụ của Agent. |
+
+> *\* Ghi chú: Con số độ trễ <100ms của RDI là ước tính kỹ thuật thực tế cho kiến trúc Log-based CDC qua WAL, không phải cam kết SLA cố định của Redis và có thể thay đổi tùy thuộc quy mô hạ tầng mạng và throughput nguồn.*
 
 ---
 
