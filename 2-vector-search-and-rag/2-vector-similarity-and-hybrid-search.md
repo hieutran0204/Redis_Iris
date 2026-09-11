@@ -1,6 +1,6 @@
 <!--
 name: 2-vector-similarity-and-hybrid-search.md
-description: In-depth guide to Vector Similarity Metrics (Cosine, IP, L2), FT.SEARCH KNN queries, Vector Range Search, Multi-tenant Hybrid Search, Pre-filtering mechanics, and integration with Redis Iris Context Platform.
+description: In-depth guide to Vector Similarity Metrics (Cosine, IP, L2), FT.SEARCH KNN queries, Vector Range Search, Multi-tenant Hybrid Search, Pre-filtering mechanics (HYBRID_POLICY, ADHOC_BF, BATCHES), modern FT.HYBRID command (Redis 8.4+), and integration with Redis Iris Context Platform.
 -->
 
 # 2.2 — Vector Similarity & Hybrid Search — Tìm kiếm Ngữ nghĩa cho RAG & AI Agent Memory
@@ -8,11 +8,16 @@ description: In-depth guide to Vector Similarity Metrics (Cosine, IP, L2), FT.SE
 Trong bài trước, chúng ta đã nắm vững cách số hóa văn bản thành Vector và lập chỉ mục bằng giải thuật đồ thị **HNSW** trên Redis. 
 
 Tuy nhiên, trong các hệ thống AI Agent thực chiến cấp doanh nghiệp, một bài toán sống còn xuất hiện:
-> *"Làm thế nào để tìm kiếm chính xác các mảnh ký ức ngữ nghĩa liên quan nhất, nhưng **tuyệt đối không được rò rỉ dữ liệu** giữa các User khác nhau, **không lấy nhầm văn bản đã hết hạn**, và **không tốn kém tài nguyên** quét toàn bộ cơ sở dữ liệu?"*
+> *"Làm thế nào để tìm kiếm chính xác các mảnh ký ức ngữ nghĩa liên quan nhất, nhưng **tuyệt đối không được rò rỉ dữ liệu** giữa các User khác nhau, **không lấy nhầm văn bản đã hết hạn**, và **kết hợp được cả từ khóa chính xác lẫn ngữ nghĩa** mà không làm nghẽn CPU?"*
 
 Nếu chỉ dùng **Pure Vector Search (Tìm kiếm vector thuần túy)**, hệ thống của bạn sẽ nhanh chóng gặp thảm họa vi phạm bảo mật đa người dùng (Multi-tenant data leakage) và hiện tượng "ảo giác dữ liệu cũ".
 
-Chương này sẽ trang bị cho bạn kiến thức chuyên sâu về **3 hàm đo khoảng cách vector**, cú pháp truy vấn **`FT.SEARCH` KNN / Vector Range**, cơ chế **Hybrid Search (Pre-filtering)**, và cách nền tảng **Redis Iris AI Platform** khai thác tầng tìm kiếm này để quản lý ngữ cảnh cho Agent.
+Chương này sẽ trang bị cho bạn kiến thức chuyên sâu về:
+1. **3 hàm đo khoảng cách vector** (`COSINE`, `IP`, `L2`) và cách chọn chuẩn xác.
+2. Cú pháp truy vấn **`FT.SEARCH` KNN & Vector Range Query**.
+3. Cơ chế **Pre-filtering với 3 chế độ thực thi chính thức của Redis** (`HYBRID_ADHOC_BF`, `HYBRID_BATCHES`, `HYBRID_BATCHES_TO_ADHOC_BF`) và cách kiểm soát qua `HYBRID_POLICY` / `FT.PROFILE`.
+4. Lệnh **`FT.HYBRID` hoàn toàn mới (Redis 8.4+)** kết hợp Full-Text BM25 + Vector Similarity qua thuật toán hợp nhất **Reciprocal Rank Fusion (RRF)**.
+5. Cách nền tảng **Redis Iris AI Platform** khai thác tầng tìm kiếm này để quản lý ngữ cảnh cho Agent.
 
 ---
 
@@ -20,7 +25,7 @@ Chương này sẽ trang bị cho bạn kiến thức chuyên sâu về **3 hàm
 
 Khi khai báo trường `VECTOR` trong RediSearch, tham số `DISTANCE_METRIC` quyết định thuật toán mà Redis dùng để tính mức độ "gần nhau" giữa vector truy vấn ($\vec{q}$) và vector tài liệu ($\vec{d}$).
 
-```
+```sql
 FT.CREATE idx:kb ON JSON SCHEMA $.embedding AS embedding VECTOR HNSW 6 ... DISTANCE_METRIC <COSINE | IP | L2>
 ```
 
@@ -64,8 +69,8 @@ graph LR
     $$\|\vec{u}\|_2 \|\vec{v}\|_2 = 1 \times 1 = 1 \implies \text{Cosine Distance} \equiv \text{IP Distance}$$
   * **Tại sao nên dùng `IP` thay vì `COSINE`?** 
     * Thuật toán `COSINE` phải thực hiện phép chia căn bậc hai ở mẫu số cho mỗi lần so sánh cạnh đồ thị HNSW.
-    * `IP` chỉ thực hiện các phép nhân cộng (FMA - Fused Multiply-Add), tận dụng tối đa tập lệnh SIMD (AVX-512 / ARM NEON) của CPU.
-    * **Kết quả**: `IP` cho thông lượng truy vấn (Throughput) **nhanh hơn 20% – 40%** so với `COSINE` trên cùng một tập dữ liệu!
+    * `IP` chỉ thực hiện các phép nhân và cộng (FMA - Fused Multiply-Add), tận dụng tối đa tập lệnh SIMD (AVX-512 / ARM NEON) của CPU.
+    * **Kết quả**: `IP` cho thông lượng truy vấn (Throughput) **nhanh hơn đáng kể** so với `COSINE` trên cùng một tập dữ liệu, do loại bỏ hoàn toàn chi phí tính toán căn bậc hai và chuẩn hóa mẫu số tại runtime!
 
 > [!TIP]
 > Các mô hình Embedding hiện đại như OpenAI `text-embedding-3-small` / `large`, Cohere Embed v3, hay BGE-M3 mặc định **đều đã xuất xưởng dưới dạng vector chuẩn hóa $L_2 = 1$**. Hãy ưu tiên chọn `DISTANCE_METRIC IP` để đạt hiệu năng tối đa trên Redis!
@@ -148,7 +153,7 @@ FT.SEARCH idx:kb
 
 ---
 
-## 3. Hybrid Search: Trái tim của Hệ thống AI Agent Thực chiến
+## 3. Metadata Filtering: Trái tim của Hệ thống AI Agent Thực chiến
 
 ### 3.1. Thảm họa khi thiếu Metadata Filtering
 
@@ -166,7 +171,7 @@ graph TD
         VSearch --> Expired["Lấy nhầm chính sách cũ hết hạn từ năm 2021"]
     end
     
-    subgraph Hybrid["✅ Hybrid Search (Vector + Metadata Pre-filtering)"]
+    subgraph Hybrid["✅ Metadata Filtered Search (Vector + Pre-filtering)"]
         Embed --> Filter["Áp bộ lọc: tenant_id == 'A' AND status == 'active'"]
         Filter --> MaskedSearch["Chỉ duyệt KNN trong phạm vi tài liệu hợp lệ của User A"]
         MaskedSearch --> SecureDocs["Kết quả chính xác, bảo mật tuyệt đối"]
@@ -190,7 +195,7 @@ Chỉ lấy các ký ức được tạo trong 30 ngày gần nhất (Timestamp 
 (@created_at:[1725100000 +inf])=>[KNN 5 @embedding $BLOB AS score]
 ```
 
-#### 3. Lọc kết hợp Phức tạp (Full Hybrid Search):
+#### 3. Lọc kết hợp Phức tạp:
 Tìm kiếm các tài liệu thuộc danh mục `hr_policy` hoặc `security_rule`, có trạng thái `active`, tạo sau mốc thời gian chỉ định, và thuộc quyền truy cập của công ty `acme_corp`:
 
 ```sql
@@ -204,45 +209,134 @@ Tìm kiếm các tài liệu thuộc danh mục `hr_policy` hoặc `security_rul
 
 ---
 
-## 4. Bản chất thuật toán: Pre-filtering vs Post-filtering
+## 4. Bản chất thuật toán Pre-filtering: 3 Chế độ Thực thi Chính thức của Redis
 
-Có 2 trường phái kỹ thuật khi kết hợp Vector và Bộ lọc:
+Một câu hỏi cốt lõi mà các kỹ sư hạ tầng luôn đặt ra:
+> *"Khi ta kết hợp bộ lọc metadata với Vector Search, RediSearch thực thi giải thuật lọc như thế nào để không làm đứt gãy đồ thị HNSW?"*
+
+Trong tài liệu kỹ thuật chính thức của Redis, cơ chế lọc kết hợp (Hybrid Filtering) được vận hành thông qua **3 chế độ thực thi (Execution Modes)** rõ ràng:
 
 ```mermaid
-sequenceDiagram
-    autonumber
-    participant App as AI Agent App
-    participant RediSearch as Redis Query Engine
-    participant HNSW as HNSW Graph / Inverted Index
-
-    Note over App, HNSW: Trường phái 1: Post-filtering (Kém hiệu quả)
-    App->>HNSW: 1. Tìm Top 100 vector gần nhất trên toàn bộ dữ liệu
-    HNSW-->>App: Trả về 100 docs
-    App->>App: 2. Lọc bỏ các doc không thuộc tenant_id='A'
-    Note over App: Nếu chỉ có 2 doc thuộc tenant A -> Recall sụp đổ!
-
-    Note over App, HNSW: Trường phái 2: Pre-filtering (Cơ chế chuẩn của RediSearch)
-    App->>RediSearch: Gửi Hybrid Query (@tenant_id:{A}) => [KNN 5 @embedding $BLOB]
-    RediSearch->>HNSW: Tạo Bitmap Filter tập hợp doc thỏa mãn Tenant A
-    HNSW->>HNSW: Duyệt đồ thị HNSW chỉ qua các node nằm trong Bitmap
-    HNSW-->>App: Trả về chính xác Top 5 vector tốt nhất của riêng Tenant A!
+graph TD
+    Query["Truy vấn: (Filter Predicate) => [KNN K @vector $BLOB]"] --> Evaluator{"Redis Query Optimizer đánh giá độ chọn lọc của Filter"}
+    Evaluator -- "Filter chọn lọc cao<br/>(Tập kết quả sau lọc nhỏ)" --> Mode1["1. HYBRID_ADHOC_BF<br/>(Ad-hoc Brute Force: Quét trực tiếp trên tập lọc)"]
+    Evaluator -- "Filter chọn lọc thấp<br/>(Tập kết quả sau lọc lớn)" --> Mode2["2. HYBRID_BATCHES<br/>(Lấy từng batch từ HNSW Index rồi kiểm tra filter)"]
+    Mode2 -- "Duyệt nhiều batch<br/>vẫn chưa gom đủ K kết quả" --> Mode3["3. HYBRID_BATCHES_TO_ADHOC_BF<br/>(Tự động chuyển đổi linh hoạt sang Ad-hoc BF)"]
 ```
 
-### So sánh chi tiết hai cơ chế:
+### Chi tiết 3 Chế độ Thực thi:
 
-1. **Post-filtering (Hậu lọc - Nguy hiểm)**:
-   * Chạy KNN tìm $K$ vector gần nhất trên toàn bộ database trước.
-   * Sau đó mới duyệt qua kết quả và loại bỏ các bản ghi không thỏa mãn metadata filter.
-   * **Lỗ hổng chết người**: Nếu người dùng chỉ sở hữu $1\%$ tổng dữ liệu hệ thống, khả năng cao toàn bộ Top 10 kết quả trả về đều thuộc về... người khác! Kết quả sau khi lọc là mảng rỗng ($\text{Recall} = 0$).
+1. **`HYBRID_ADHOC_BF` (Ad-hoc Brute Force)**:
+   * **Cơ chế**: Redis sử dụng Inverted Index của RediSearch để lấy toàn bộ danh sách các document thỏa mãn biểu thức lọc trước. Sau đó, nó tính toán khoảng cách vector trực tiếp (Brute Force Distance Calculation) trên riêng tập tài liệu này để chọn ra Top $K$.
+   * **Khi nào tối ưu?**: Khi bộ lọc **có độ chọn lọc cao (Highly Selective)** — ví dụ bộ lọc `@user_id:{alice}` chỉ trả về 50 tài liệu trong tổng số 10 triệu bản ghi. Quét thẳng 50 tài liệu nhanh hơn gấp nhiều lần việc lang thang duyệt đồ thị HNSW 10 triệu đỉnh!
+   * **Ưu điểm lớn nhất**: Loại bỏ hoàn toàn nguy cơ "đứt gãy đồ thị" (Graph Disconnection Problem).
 
-2. **Pre-filtering trong Redis (Tiền lọc thông minh)**:
-   * RediSearch thực thi bộ lọc metadata **ngay trong lúc duyệt đồ thị Vector**:
-     * **Batched Pre-filtering**: RediSearch lấy danh sách ID tài liệu thỏa mãn metadata (dưới dạng bitset/bitmap từ Inverted Index). Khi thuật toán HNSW duyệt qua các đỉnh láng giềng, đỉnh nào không nằm trong bitset sẽ bị bỏ qua ngay lập tức.
-     * **Linear Scan Fallback**: Nếu bộ lọc metadata quá khắt khe (ví dụ sau khi lọc chỉ còn dưới $1,000$ documents thỏa mãn), Redis sẽ tự động chuyển sang chế độ quét tuyến tính chính xác (Exact FLAT Scan) trên $1,000$ phần tử đó thay vì duyệt HNSW. Cơ chế thông minh này loại bỏ hoàn toàn hiện tượng "đứt gãy đồ thị" (Graph disconnection) mà các vector database khác thường mắc phải!
+2. **`HYBRID_BATCHES`**:
+   * **Cơ chế**: Redis truy vấn đồ thị HNSW để lấy ra các vector gần nhất theo từng **lô (batch)** nhỏ. Với mỗi lô, Redis kiểm tra xem các vector đó có thỏa mãn điều kiện filter hay không. Quá trình này lặp lại cho đến khi thu thập đủ $K$ kết quả đạt yêu cầu.
+   * **Khi nào tối ưu?**: Khi bộ lọc **có độ chọn lọc thấp (Broad Filter)** — ví dụ bộ lọc `@status:{active}` thỏa mãn tới $95\%$ dữ liệu. Lúc này, hầu như mọi vector gần nhất tìm được trên HNSW đều vượt qua filter ngay trong batch đầu tiên, giúp tốc độ đạt mức tối đa.
+
+3. **`HYBRID_BATCHES_TO_ADHOC_BF` (Cơ chế thích ứng thông minh mặc định)**:
+   * **Cơ chế**: Redis bắt đầu bằng chiến lược `HYBRID_BATCHES`. Tuy nhiên, nếu sau một số lượng batch nhất định mà vẫn chưa thu đủ $K$ kết quả (do filter khó hơn dự tính), hệ thống sẽ **tự động chuyển đổi sang `HYBRID_ADHOC_BF`** ở giữa chừng!
+   * **Lợi ích**: Ngăn ngừa thảm họa CPU starvation khi thuật toán duyệt batch liên tục mà không tìm thấy kết quả phù hợp.
 
 ---
 
-## 5. Tương thích với Nền tảng Redis Iris AI Platform
+### 4.1. Điều khiển Chế độ Lọc bằng tham số `HYBRID_POLICY`
+
+Theo mặc định, RediSearch tự động ước lượng kích thước tập dữ liệu để chọn chế độ tối ưu. Tuy nhiên, bạn có thể **chủ động ép chế độ thực thi** bằng tham số runtime `HYBRID_POLICY`:
+
+```sql
+-- Ép buộc dùng Ad-hoc Brute Force khi biết chắc user chỉ có ít dữ liệu:
+FT.SEARCH idx:kb "(@user_id:{user_alice})=>[KNN 5 @embedding $BLOB HYBRID_POLICY ADHOC_BF]" PARAMS 2 BLOB <bytes> DIALECT 2
+
+-- Ép buộc dùng Batches khi filter rất rộng:
+FT.SEARCH idx:kb "(@language:{vi})=>[KNN 5 @embedding $BLOB HYBRID_POLICY BATCHES]" PARAMS 2 BLOB <bytes> DIALECT 2
+```
+
+### 4.2. Debugging Hiệu năng với `FT.PROFILE`
+
+Để kiểm tra xem Redis đang thực sự chạy chế độ nào trên tập dữ liệu thực tế của bạn, hãy sử dụng lệnh `FT.PROFILE`:
+
+```sql
+FT.PROFILE idx:kb SEARCH QUERY "(@user_id:{user_alice})=>[KNN 5 @embedding $BLOB]" PARAMS 2 BLOB <bytes> DIALECT 2
+```
+
+Trong kết quả trả về ở mục **`Vector index` / `Iterators profile`**, bạn sẽ nhìn thấy chính xác:
+* Mode được chọn: `HYBRID_ADHOC_BF` hay `HYBRID_BATCHES`.
+* Số lượng batch đã duyệt (`batches_count`).
+* Thời gian tính toán khoảng cách vector thực tế (`compute_time`).
+
+---
+
+## 5. `FT.HYBRID` — Kỷ nguyên Mới của Hybrid Search (Redis 8.4+)
+
+Trong các phiên bản trước đây, cộng đồng gọi việc dùng `FT.SEARCH` với biểu thức lọc metadata là "Hybrid Search". Nhưng về bản chất, đó chỉ là **Filtered Vector Search** (Tìm kiếm vector có điều kiện lọc).
+
+**True Hybrid Search (Tìm kiếm Lai Thực thụ)** đòi hỏi khả năng:
+$$\text{Kết hợp đồng thời: } \underbrace{\text{Full-Text Lexical Search (BM25)}}_{\text{Chính xác từ khóa, thuật ngữ chuyên ngành}} + \underbrace{\text{Dense Vector Search (HNSW)}}_{\text{Bắt trúng ý nghĩa tương đương}} \longrightarrow \underbrace{\text{Hợp nhất Bảng xếp hạng (Score Fusion)}}_{\text{Đưa ra Top K xuất sắc nhất}}$$
+
+Từ phiên bản **Redis 8.4.0**, Redis chính thức giới thiệu lệnh bản địa hoàn toàn mới: **`FT.HYBRID`**.
+
+```mermaid
+graph TD
+    Query["User Query: 'Chính sách bảo mật thẻ tín dụng'"] --> Lexical["Nhánh 1: Full-Text BM25 Search<br/>(So khớp từ khóa 'bảo mật', 'thẻ tín dụng')"]
+    Query --> Semantic["Nhánh 2: Vector Similarity Search<br/>(HNSW KNN tìm ngữ nghĩa tài chính/an toàn)"]
+    
+    Lexical --> Fusion{"Thuật toán Hợp nhất Server-side<br/>(Reciprocal Rank Fusion - RRF)"}
+    Semantic --> Fusion
+    
+    Fusion --> Output["Danh sách Top K được xếp hạng tối ưu vượt trội!"]
+```
+
+---
+
+### 5.1. Cú pháp Lệnh `FT.HYBRID`
+
+```text
+FT.HYBRID <index> 
+  SEARCH <text_query> 
+  VSIM <vector_field> $<vector_param> [KNN <k> [EF_RUNTIME <ef>]] 
+  [FILTER <filter_expression>] 
+  [COMBINE RRF <count> [CONSTANT <c>] [WINDOW <w>]] 
+  [COMBINE LINEAR <count> [ALPHA <alpha>] [BETA <beta>]] 
+  PARAMS 2 <vector_param> <binary_bytes>
+```
+
+### Các thành phần chính:
+* `SEARCH <text_query>`: Truy vấn văn bản truyền thống (sử dụng thuật toán tính điểm BM25).
+* `VSIM @embedding $vec KNN 10`: Truy vấn tìm kiếm độ tương đồng vector lấy Top 10 láng giềng.
+* `FILTER <expr>`: Bộ lọc metadata bổ sung (ví dụ `FILTER "@status:{active}"`).
+* `COMBINE`: Phương thức hợp nhất bảng điểm:
+  1. **`COMBINE RRF` (Reciprocal Rank Fusion — Tiêu chuẩn khuyến nghị)**:
+     * Công thức toán học:
+       $$\text{RRF\_Score}(d) = \frac{1}{k + \text{Rank}_{\text{Text}}(d)} + \frac{1}{k + \text{Rank}_{\text{Vector}}(d)}$$
+     * Tham số `CONSTANT <c>` (mặc định $60$): Giúp làm mượt bảng xếp hạng, không bị thiên lệch bởi thứ hạng cực đoan.
+     * **Ưu điểm**: Không cần chuẩn hóa thang điểm (vì BM25 tính điểm từ $0 \to +\infty$ còn Cosine tính từ $0 \to 2$, việc cộng điểm trực tiếp sẽ bị sai lệch hoàn toàn). RRF chỉ quan tâm tới **vị trí xếp hạng (Rank)** của tài liệu trong từng danh sách!
+  2. **`COMBINE LINEAR` (Kết hợp Tuyến tính có Trọng số)**:
+     * Công thức: $\text{Score} = \alpha \cdot \text{Score}_{\text{Text}} + \beta \cdot \text{Score}_{\text{Vector}}$.
+     * Dành cho các hệ thống đã tinh chỉnh (fine-tuned) trọng số $\alpha, \beta$ qua benchmark.
+
+---
+
+### 5.2. Ví dụ Lệnh `FT.HYBRID` Thực tế
+
+```sql
+FT.HYBRID idx:kb 
+  SEARCH "bảo mật thẻ tín dụng" 
+  VSIM @embedding $q_vec KNN 10 
+  FILTER "@status:{active}" 
+  COMBINE RRF 5 CONSTANT 60 
+  PARAMS 2 q_vec "\x12\xa9\xf5\x6c..."
+```
+
+> [!NOTE]
+> **Khi nào dùng lệnh nào?**
+> * Dùng **`FT.SEARCH` + Filter**: Khi bạn chỉ tìm kiếm theo ngữ nghĩa vector, nhưng cần cô lập theo quyền truy cập (`@user_id`), danh mục (`@category`), thời gian (`@created_at`).
+> * Dùng **`FT.HYBRID`**: Khi bạn cần sự phối hợp sức mạnh của cả 2 thế giới — vừa không muốn bỏ sót từ khóa chuyên ngành (mã số lỗi, tên hàm code, mã sản phẩm SKU), vừa muốn hiểu ngữ nghĩa câu hỏi tổng thể của người dùng.
+
+---
+
+## 6. Tương thích với Nền tảng Redis Iris AI Platform
 
 Trong hệ sinh thái chuyên biệt cho AI Agent vừa được Redis công bố — **Redis Iris**, cơ chế Hybrid Search chính là "động cơ ngầm" kích hoạt các năng lực sau:
 
@@ -259,7 +353,7 @@ graph TD
 
 1. **Redis Agent Memory**:
    * Tự động quản lý 2 tầng bộ nhớ: **Working Memory** (lưu ngữ cảnh phiên chat hiện tại trên RedisJSON) và **Episodic Long-term Memory** (vector hóa các sự kiện quan trọng).
-   * Khi Agent cần hồi tưởng quá khứ, Iris thực thi câu truy vấn Hybrid Search với bộ lọc cứng `@user_id` và `@session_id` để đảm bảo không bao giờ "nhớ nhầm ký ức của người khác".
+   * Khi Agent cần hồi tưởng quá khứ, Iris thực thi câu truy vấn Hybrid Search với bộ lọc cứng `@user_id` và `@session_id` với policy `HYBRID_ADHOC_BF` để đảm bảo không bao giờ "nhớ nhầm ký ức của người khác" và tốc độ hồi đáp dưới $5\text{ms}$.
 2. **Redis LangCache (Semantic Caching)**:
    * Sử dụng **Vector Range Query** với khoảng cách Cosine cực nhỏ ($R \le 0.10$). Khi người dùng hỏi một câu có cùng ý nghĩa với câu hỏi 5 phút trước, hệ thống trả về câu trả lời đã lưu trong cache mà không cần tốn tiền gọi API OpenAI/Claude.
 3. **Redis Context Retriever**:
@@ -267,17 +361,17 @@ graph TD
 
 ---
 
-## 6. Thực hành Code mẫu Python: Hybrid Search & Multi-Tenant Memory
+## 7. Thực hành Code mẫu Python: Multi-Tenant Memory Search
 
 Dưới đây là kịch bản thực tế hoàn chỉnh: Xây dựng hệ thống lưu trữ và tìm kiếm ký ức cho AI Agent đa người dùng bằng thư viện `redis-py` (hỗ trợ RediSearch).
 
-### 6.1. Cài đặt thư viện cần thiết
+### 7.1. Cài đặt thư viện cần thiết
 
 ```bash
 pip install redis numpy sentence-transformers
 ```
 
-### 6.2. Source Code hoàn chỉnh
+### 7.2. Source Code hoàn chỉnh
 
 ```python
 """
@@ -424,8 +518,8 @@ def run_hybrid_search(target_user_id: str, query_vector: list, top_k: int = 2):
 
     query_bytes = np.array(query_vector, dtype=np.float32).tobytes()
 
-    # Pre-filter: Bắt buộc trường user_id phải khớp chính xác
-    query_str = f"(@user_id:{{{target_user_id}}})=>[KNN {top_k} @embedding $BLOB AS score]"
+    # Pre-filter: Bắt buộc trường user_id phải khớp chính xác, áp dụng HYBRID_POLICY ADHOC_BF
+    query_str = f"(@user_id:{{{target_user_id}}})=>[KNN {top_k} @embedding $BLOB HYBRID_POLICY ADHOC_BF AS score]"
     q = (
         Query(query_str)
         .sort_by("score", asc=True)
@@ -488,11 +582,13 @@ if __name__ == "__main__":
 
 ---
 
-## 7. Tiếp cận Hiện đại: Sử dụng Redis VL (`redisvl`)
+## 8. Tiếp cận Hiện đại: Sử dụng Redis VL (`redisvl`)
 
-Bên cạnh thư viện gốc `redis-py`, đội ngũ Redis AI đã phát triển thư viện cấp cao chuyên dụng mang tên **Redis Vector Library (`redisvl`)**. 
+Bên cạnh thư viện gốc `redis-py`, đội ngũ Redis AI phát triển thư viện cấp cao chuyên dụng mang tên **Redis Vector Library (`redisvl`)**. 
 
-Thư viện này cung cấp cú pháp hướng đối tượng cực kỳ trong sáng cho Hybrid Search:
+Thư viện này cung cấp cú pháp hướng đối tượng cực kỳ trong sáng cho cả Vector Query có Filter lẫn lệnh `FT.HYBRID` mới:
+
+### 8.1. Vector Query kết hợp Filter qua `redisvl`
 
 ```python
 from redisvl.index import SearchIndex
@@ -506,7 +602,7 @@ index.connect("redis://localhost:6379")
 # 2. Tạo biểu thức lọc Hybrid chuẩn Pythonic
 filter_expression = (Tag("user_id") == "user_alice") & (Num("created_at") >= 1704067200)
 
-# 3. Tạo Vector Query tích hợp Filter
+# 3. Tạo Vector Query tích hợp Filter và Policy
 query = VectorQuery(
     vector=[0.024, -0.158, 0.891, 0.045],
     vector_field_name="embedding",
@@ -521,15 +617,38 @@ for doc in results:
     print(f"Doc: {doc['content']} | Distance: {doc['vector_distance']}")
 ```
 
+### 8.2. Hybrid Query (Text + Vector RRF Fusion) trên `redisvl`
+
+Trên các phiên bản mới của `redisvl` hỗ trợ `FT.HYBRID`, bạn có thể thực hiện tìm kiếm lai với Reciprocal Rank Fusion một cách gọn gàng:
+
+```python
+from redisvl.query import HybridQuery
+from redisvl.query.filter import Tag
+
+hybrid_query = HybridQuery(
+    text="quy định bảo mật tài khoản",
+    text_field_name="content",
+    vector=[0.024, -0.158, 0.891, 0.045],
+    vector_field_name="embedding",
+    num_results=5,
+    filter_expression=(Tag("status") == "active"),
+    # Fusion method: RRF (Reciprocal Rank Fusion)
+    fusion_algorithm="rrf"
+)
+
+results = index.query(hybrid_query)
+```
+
 ---
 
-## 8. Production Checklist & Best Practices
+## 9. Production Checklist & Best Practices
 
 1. **Luôn bật `DIALECT 2` hoặc `DIALECT 4`**: Nếu quên chỉ định dialect, câu lệnh `FT.SEARCH` sẽ báo lỗi cú pháp hoặc fallback về dialect 1 không hỗ trợ toán tử vector.
-2. **Luôn gán nhãn `TAG` cho các trường định danh**: Các trường như `tenant_id`, `user_id`, `org_id`, `status` phải dùng kiểu `TagField` thay vì `TextField` để đảm bảo so khớp chính xác tuyệt đối (exact match), không bị ảnh hưởng bởi cơ chế tách từ (tokenization) hay stemmer của ngôn ngữ.
-3. **Sắp xếp `SORTBY score ASC`**: Khoảng cách nhỏ hơn nghĩa là độ tương đồng cao hơn. Sắp xếp `DESC` sẽ trả về những tài liệu... ít liên quan nhất!
-4. **Luôn nạp Query Vector dưới dạng `FLOAT32` binary buffer**: Kể cả khi dữ liệu trong Redis lưu dạng JSON, giá trị tham số `$BLOB` truyền vào `PARAMS` vẫn bắt buộc phải là bytes (`np.array(vec, dtype=np.float32).tobytes()`).
-5. **Cân nhắc `IP` thay vì `COSINE` khi scale lớn**: Đảm bảo chuẩn hóa vector ở client trước khi nạp (`vec = vec / np.linalg.norm(vec)`), sau đó cấu hình `DISTANCE_METRIC IP` để đạt tốc độ truy vấn cao nhất và tiết kiệm chu kỳ CPU của Redis.
+2. **Hiểu rõ `HYBRID_POLICY`**: Mặc định Redis tự động cân bằng (`HYBRID_BATCHES_TO_ADHOC_BF`). Nhưng trong các use-case Multi-tenant có dữ liệu phân mảnh nhỏ theo từng user/tenant, hãy cân nhắc chỉ định `HYBRID_POLICY ADHOC_BF` để tiết kiệm chu kỳ CPU duyệt đồ thị.
+3. **Chuyển sang `FT.HYBRID` khi cần cả Từ khóa và Ngữ nghĩa**: Nếu ứng dụng của bạn tìm kiếm tài liệu có nhiều thuật ngữ chuyên môn, mã code, hoặc tên riêng, hãy nâng cấp lên Redis 8.4+ để tận dụng `FT.HYBRID` với thuật toán RRF server-side thay vì tự viết logic ghép điểm ở client.
+4. **Luôn gán nhãn `TAG` cho các trường định danh**: Các trường như `tenant_id`, `user_id`, `org_id`, `status` phải dùng kiểu `TagField` thay vì `TextField` để đảm bảo so khớp chính xác tuyệt đối (exact match).
+5. **Sắp xếp `SORTBY score ASC`**: Khoảng cách nhỏ hơn nghĩa là độ tương đồng cao hơn. Sắp xếp `DESC` sẽ trả về những tài liệu ít liên quan nhất!
+6. **Luôn nạp Query Vector dưới dạng `FLOAT32` binary buffer**: Kể cả khi dữ liệu trong Redis lưu dạng JSON, giá trị tham số `$BLOB` truyền vào `PARAMS` vẫn bắt buộc phải là bytes (`np.array(vec, dtype=np.float32).tobytes()`).
 
 ---
 
