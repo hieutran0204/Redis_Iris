@@ -425,11 +425,14 @@ if __name__ == "__main__":
 
 | Giải pháp Reranker | Kiểu triển khai | Latency trung bình | Chi phí bản quyền | Đánh giá thực chiến |
 | :--- | :--- | :--- | :--- | :--- |
-| **`bge-reranker-base / large`** | Tự host (GPU / vCPU) | 30 – 80 ms | Mã nguồn mở (Apache 2.0) | **Lựa chọn mã nguồn mở số 1 hiện nay**. Hỗ trợ đa ngôn ngữ xuất sắc (tiếng Anh, tiếng Việt, tiếng Trung). |
+| **`bge-reranker-base / large`** | Tự host (GPU / vCPU) | 30 – 80 ms | Mã nguồn mở (MIT) | **Lựa chọn mã nguồn mở số 1 hiện nay**. Hỗ trợ đa ngôn ngữ xuất sắc (tiếng Anh, tiếng Việt, tiếng Trung). |
 | **`ms-marco-MiniLM-L-6-v2`** | Tự host (Chạy tốt trên CPU) | 10 – 25 ms | Mã nguồn mở (Apache 2.0) | Cực kỳ nhẹ và nhanh, phù hợp cho các server không có GPU rời, xử lý tiếng Anh rất tốt. |
 | **`Cohere Rerank v3.5`** | Cloud Managed API | 80 – 150 ms | Trả phí theo lượt gọi ($/1K searches) | **Chất lượng đầu bảng ngành**, hiểu sâu context tài liệu phức tạp, tích hợp đơn giản qua SDK. |
 | **`Jina Reranker v2`** | Cloud API hoặc Tự host | 40 – 90 ms | Freemium / Open-weights | Hỗ trợ context dài (tới 1024 tokens mỗi doc), hiệu năng rất cạnh tranh. |
 | **LLM-as-a-Reranker (RankGPT)** | Gọi LLM (`gpt-4o-mini`) | 400 – 1200 ms | Trả phí Token LLM | Độ thông minh cực cao nhưng latency quá lớn, không khả thi cho real-time chatbot. |
+
+> [!NOTE]
+> Các con số latency trong bảng trên là **ước lượng tham khảo thực tế** (mang tính tương đối để so sánh thứ tự độ lớn giữa các mô hình). Tốc độ thực tế phụ thuộc lớn vào cấu hình hạ tầng (loại GPU/CPU, băng thông mạng tới Cloud API, batch size và độ dài trung bình của các chunk tài liệu).
 
 ---
 
