@@ -52,7 +52,7 @@ Xây dựng Vector Database tốc độ cao và tối ưu hóa RAG Pipeline cho 
 
 | # | Nội dung | Trạng thái |
 |---|-----|-----------|
-| 1 | [Embeddings & HNSW Indexing — Xây dựng Vector DB trên Redis](./2-vector-search-and-rag/1-embeddings-and-hnsw-indexing.md) | 🚧 Sắp ra mắt |
+| 1 | [Embeddings & HNSW Indexing — Xây dựng Vector DB trên Redis](./2-vector-search-and-rag/1-embeddings-and-hnsw-indexing.md) | ✅ Hoàn thành |
 | 2 | [Vector Similarity & Hybrid Search — Tìm kiếm ngữ nghĩa cho RAG](./2-vector-search-and-rag/2-vector-similarity-and-hybrid-search.md) | 🚧 Sắp ra mắt |
 | 3 | [RAG Benchmarking & Evaluation — Đo lường Recall@K & chất lượng Retrieval](./2-vector-search-and-rag/3-rag-benchmarking-and-evaluation.md) | 🚧 Sắp ra mắt |
 | 4 | [Vector Migration Guide — Import Embeddings từ Pinecone / Qdrant / PGVector](./2-vector-search-and-rag/4-vector-migration-guide.md) | 🚧 Sắp ra mắt |
