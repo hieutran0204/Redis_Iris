@@ -1,0 +1,19 @@
+# Redis Stack with Redis Insight, RediSearch, RedisJSON, and RedisBloom
+# Designed for AI Agent workloads, Vector Search, and Semantic Caching
+services:
+  redis-stack:
+    image: redis/redis-stack:latest
+    container_name: redis-stack-ai
+    restart: unless-stopped
+    ports:
+      - "6379:6379"     # Redis Server Port
+      - "8001:8001"     # Redis Insight Web UI
+    environment:
+      - REDIS_ARGS=--requirepass secret123 --save 60 1 --loglevel notice
+    volumes:
+      - redis-data:/data
+
+volumes:
+  redis-data:
+    name: redis-stack-ai-data
+    driver: local
