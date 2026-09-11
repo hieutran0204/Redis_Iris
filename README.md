@@ -47,7 +47,7 @@ Cấu trúc dữ liệu tối ưu, kiến trúc bộ nhớ Agent, Event Loop và
 
 ---
 
-### 🔜 [Chương 2: Vector Search & RAG](./2-vector-search-and-rag/)
+### ✅ [Chương 2: Vector Search & RAG](./2-vector-search-and-rag/)
 Xây dựng Vector Database tốc độ cao và tối ưu hóa RAG Pipeline cho Agent.
 
 | # | Nội dung | Trạng thái |
@@ -57,7 +57,7 @@ Xây dựng Vector Database tốc độ cao và tối ưu hóa RAG Pipeline cho 
 | 2 | [Vector Similarity & Hybrid Search — Tìm kiếm ngữ nghĩa cho RAG](./2-vector-search-and-rag/2-vector-similarity-and-hybrid-search.md) | ✅ Hoàn thành |
 | 3 | [RAG Pipeline & Reranking — Ráp nối Hệ thống RAG Thực chiến](./2-vector-search-and-rag/3-rag-pipeline-and-reranking.md) | ✅ Hoàn thành |
 | 4 | [RAG Benchmarking & Evaluation — Đo lường Recall@K & chất lượng Retrieval](./2-vector-search-and-rag/4-rag-benchmarking-and-evaluation.md) | ✅ Hoàn thành |
-| 5 | [Vector Migration Guide — Import Embeddings từ Pinecone / Qdrant / PGVector](./2-vector-search-and-rag/5-vector-migration-guide.md) | 🚧 Sắp ra mắt |
+| 5 | [Vector Migration Guide — Import Embeddings từ Pinecone / Qdrant / PGVector](./2-vector-search-and-rag/5-vector-migration-guide.md) | ✅ Hoàn thành |
 
 ---
 
