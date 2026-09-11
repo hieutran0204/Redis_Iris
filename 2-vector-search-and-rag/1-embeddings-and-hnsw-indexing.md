@@ -36,23 +36,31 @@ graph TD
     RawBytes --> Redis[("Redis Database (Lưu trữ trên RAM)")]
 ```
 
-### 1.2. Cách Redis lưu trữ Vector: Định dạng nhị phân thô (Raw Float Bytes)
-Redis không lưu vector dưới dạng mảng JSON chuỗi `"[0.12, 0.45, ...]"` vì cách này cực kỳ tốn RAM và làm chậm việc tính toán khoảng cách.
+### 1.2. Định dạng lưu trữ Vector trong Redis: `ON HASH` vs `ON JSON`
 
-Thay vào đó, Redis yêu cầu vector phải được nạp dưới dạng **chuỗi byte nhị phân (Binary Blob)** của các số thực float:
-* **FLOAT32 (Mặc định phổ biến nhất)**: Mỗi số thực chiếm 4 bytes.
-  * Vector 384 chiều (`all-MiniLM-L6-v2`): $384 \times 4 = 1,536 \text{ bytes} \approx 1.5 \text{ KB}$.
-  * Vector 1536 chiều (`text-embedding-3-small`): $1536 \times 4 = 6,144 \text{ bytes} \approx 6 \text{ KB}$.
-* **FLOAT64**: Độ chính xác kép, chiếm 8 bytes mỗi chiều (ít khi cần cho NLP).
+Tùy vào việc bạn lưu trữ vector trên cấu trúc dữ liệu nào mà Redis có quy định định dạng đầu vào khác nhau:
 
-Trong Python, bạn chuyển đổi mảng vector sang định dạng Redis bằng NumPy:
-```python
-import numpy as np
+* **Với `ON HASH`**: Redis **bắt buộc** vector phải được nạp dưới dạng **chuỗi byte nhị phân (Binary Blob)** của các số thực float (Raw bytes).
+  ```python
+  # Dành riêng cho Redis HASH (HSET)
+  byte_buffer = np.array(vector, dtype=np.float32).tobytes()
+  client.hset("doc:1", mapping={"embedding": byte_buffer})
+  ```
+* **Với `ON JSON`**: Redis cho phép bạn lưu trữ vector **trực tiếp dưới dạng một mảng JSON các số thực thông thường (JSON float array)**, hoàn toàn **không cần** chuyển đổi sang raw bytes!
+  ```python
+  # Dành cho RedisJSON (JSON.SET) — Trực quan và dễ debug
+  client.json().set("doc:1", "$", {"title": "...", "embedding": [0.024, -0.158, 0.891]})
+  ```
 
-vector = [0.024, -0.158, 0.891]
-# Bắt buộc ép kiểu về float32 và trích xuất raw bytes
-byte_buffer = np.array(vector, dtype=np.float32).tobytes()
-```
+#### Các kiểu dữ liệu Vector (`TYPE`) được Redis hỗ trợ:
+Khi định nghĩa schema, RediSearch hỗ trợ các kiểu dữ liệu float sau:
+1. **`FLOAT32` (Mặc định & phổ biến nhất)**: Mỗi chiều chiếm 4 bytes.
+   * Vector 384 chiều (`all-MiniLM-L6-v2`): $384 \times 4 = 1,536 \text{ bytes} \approx 1.5 \text{ KB}$.
+   * Vector 1536 chiều (`text-embedding-3-small`): $1536 \times 4 = 6,144 \text{ bytes} \approx 6 \text{ KB}$.
+2. **`FLOAT64`**: Độ chính xác kép, chiếm 8 bytes mỗi chiều (ít khi cần cho văn bản thông thường).
+3. **`FLOAT16` & `BFLOAT16` (Tính năng nâng cao từ RediSearch 2.10+ / Redis 7.4+)**:
+   * Mỗi chiều chỉ chiếm **2 bytes** $\to$ **Tiết kiệm ngay $50\%$ dung lượng RAM** so với `FLOAT32`!
+   * Đây là vũ khí tối thượng giúp giảm chi phí RAM khi lưu trữ hàng triệu vector trong production mà độ chính xác (Recall) gần như không suy giảm đáng kể.
 
 ---
 
@@ -65,19 +73,20 @@ Redis hỗ trợ đánh chỉ mục Vector trên 2 cấu trúc dữ liệu chín
 | **Cấu trúc lưu trữ** | Redis Hash phẳng (`HSET key field value`) | Cây tài liệu RedisJSON (`JSON.SET key $ ...`) |
 | **Độ linh hoạt dữ liệu** | Kém: Chỉ lưu được key-value 1 cấp, khó lồng danh sách/object con. | **Tuyệt vời**: Lưu trọn vẹn cả payload metadata phức tạp (tags, chat history, user profile). |
 | **Cú pháp đánh Index** | Trỏ trực tiếp vào tên field: `embedding VECTOR ...` | Trỏ qua JSONPath: `$.embedding AS embedding VECTOR ...` |
+| **Định dạng Vector** | Bắt buộc **Binary Bytes Blob** (`.tobytes()`). | Mảng số thực **JSON Array** tiêu chuẩn (`[0.1, 0.2]`). |
 | **Hiệu năng & Tối ưu** | Nhỉnh hơn một chút về RAM thuần do Hash rất nhẹ. | Tối ưu hơn cho luồng Agent vì không cần tách nhỏ document ra nhiều key. |
 
 ---
 
-## 3. So sánh thuật toán Indexing: FLAT vs HNSW
+## 3. So sánh thuật toán Indexing: FLAT vs HNSW (và SVS-VAMANA mới)
 
-Khi tạo Vector Index, Redis cung cấp 2 thuật toán tìm kiếm láng giềng gần nhất (K-Nearest Neighbors - KNN):
+Khi tạo Vector Index, Redis cung cấp các thuật toán tìm kiếm láng giềng gần nhất (Nearest Neighbors):
 
 ```mermaid
 graph LR
     subgraph FLAT["FLAT (Exact K-NN)"]
         F1["Query Vector"] --> F2["Quét duyệt vét cạn 100% database"]
-        F2 --> F3["Độ chính xác: 100%<br/>Tốc độ: O(N) - Rất chậm khi dữ liệu lớn"]
+        F2 --> F3["Độ chính xác: 100%<br/>Tốc độ: O(N)"]
     end
 
     subgraph HNSW["HNSW (Approximate K-NN)"]
@@ -93,13 +102,13 @@ graph LR
   * Không tốn thêm RAM phụ trợ để dựng đồ thị.
   * Build index tức thì, không tốn thời gian tính toán trước.
 * **Nhược điểm**:
-  * Độ phức tạp tính toán là $\mathcal{O}(N)$. Khi có 1 triệu vector, mỗi câu query phải thực hiện 1 triệu phép nhân vô hướng $\to$ độ trễ tăng vọt (hàng trăm ms đến vài giây), nghẽn CPU server.
-* **Khi nào nên dùng FLAT?**
-  * Dataset nhỏ (dưới $10.000$ vectors).
-  * Dùng làm bộ chuẩn (Ground Truth) để benchmark độ chính xác của HNSW.
+  * Độ phức tạp tính toán là $\mathcal{O}(N)$. Phép toán tăng tuyến tính theo số lượng vector trong RAM.
+* **Quy tắc lựa chọn (Official vs Rule of Thumb)**:
+  * **Tài liệu chính thức Redis**: FLAT hoàn toàn có thể chạy ổn định tới quy mô hàng trăm ngàn, thậm chí 1 triệu tài liệu nếu server đủ tài nguyên CPU và bài toán ưu tiên độ chính xác 100%.
+  * **Kinh nghiệm thực chiến cho AI Agent (Rule of Thumb)**: Vì các Agent trong vòng lặp ReAct thường gửi hàng chục query đồng thời và yêu cầu độ trễ phản hồi cực thấp (sub-10ms), chúng ta nên chủ động cân nhắc chuyển sang **HNSW** sớm hơn (khi dataset vượt qua vài chục ngàn vector) để tránh hiện tượng CPU spike làm nghẽn toàn hệ thống.
 
 ### 3.2. HNSW (Hierarchical Navigable Small World)
-* **Nguyên lý**: Lấy cảm hứng từ hiện tượng "sáu bậc cách biệt" (Six Degrees of Separation) và cấu trúc Skip-List. HNSW xây dựng một **mạng đồ thị đa tầng**:
+* **Nguyên lý**: Lấy cảm hứng từ hiện tượng "sáu bậc cách biệt" và cấu trúc Skip-List. HNSW xây dựng một **mạng đồ thị đa tầng**:
   * Tầng trên cùng: Thưa thớt, các liên kết nhảy vọt dài giúp định hướng nhanh đến vùng không gian cần tìm.
   * Càng xuống tầng dưới: Mật độ liên kết dày đặc dần để định vị chính xác điểm lân cận.
 * **Ưu điểm**:
@@ -108,7 +117,11 @@ graph LR
   * Tốn thêm **20% – 50% RAM** để lưu trữ các cạnh của đồ thị.
   * Tốn thời gian build index khi chèn dữ liệu mới.
 * **Khi nào nên dùng HNSW?**
-  * Lựa chọn mặc định cho mọi hệ thống Production của AI Agent và RAG Pipeline quy mô lớn ($> 10.000$ vectors).
+  * Lựa chọn hàng đầu cho hệ thống Production của AI Agent và RAG Pipeline quy mô lớn khi cần tốc độ phản hồi tính bằng mili-giây.
+
+> [!NOTE]
+> **Thuật toán thứ 3: SVS-VAMANA (Mới trong Redis 8 / Redis Query Engine)**:
+> Ngoài FLAT và HNSW, Redis Query Engine thế hệ mới (Redis 8) bổ sung thêm thuật toán **SVS-VAMANA** (dựa trên cấu trúc DiskANN). Thuật toán này tối ưu hóa việc lưu trữ đồ thị vector trên ổ đĩa SSD/NVMe kết hợp RAM, giúp giảm chi phí phần cứng đáng kể khi quản lý hàng chục triệu vector quy mô siêu lớn.
 
 ---
 
@@ -160,7 +173,7 @@ FT.CREATE idx:agent_knowledge ON JSON
       DIM 1536
       DISTANCE_METRIC COSINE
       M 16
-      efConstruction 200
+      EF_CONSTRUCTION 200
 ```
 
 **Giải thích từng dòng lệnh**:
@@ -173,7 +186,7 @@ FT.CREATE idx:agent_knowledge ON JSON
     * `TYPE FLOAT32`: Định dạng số thực 32-bit.
     * `DIM 1536`: Số chiều của vector (ví dụ của OpenAI `text-embedding-3-small`).
     * `DISTANCE_METRIC COSINE`: Đo độ tương đồng ngữ nghĩa bằng góc Cosine.
-    * `M 16` và `efConstruction 200`: Cấu hình đồ thị HNSW cân bằng tối ưu.
+    * `M 16` và `EF_CONSTRUCTION 200`: Cấu hình đồ thị HNSW cân bằng tối ưu (tên tham số quy chuẩn là chữ in hoa có gạch dưới).
 
 ---
 
@@ -361,16 +374,45 @@ py .\2-vector-search-and-rag\code-examples\1_embeddings_and_hnsw.py
 
 ---
 
-## 8. Tổng kết & Bước tiếp theo
+## 8. Góc nhìn hiện đại: Vector Sets (`VADD` / `VSIM`) — Kiểu dữ liệu Vector gốc trong Redis 8
 
-Trong bài này, bạn đã nắm vững nền tảng kiến trúc của **Vector Database trên Redis**:
-* Bản chất của Vector Embedding là các chuỗi byte nhị phân `FLOAT32`.
-* Tại sao **HNSW** là tiêu chuẩn vàng cho AI Agent nhờ tốc độ tìm kiếm $\mathcal{O}(\log N)$.
-* Cách tinh chỉnh bộ 3 siêu tham số `M`, `efConstruction`, và `efRuntime` để kiểm soát dung lượng RAM và Recall.
-* Cách tạo Index trên tài liệu `RedisJSON`, bảo trì cập nhật/xóa vector và chiến lược Zero-Downtime Blue-Green Reindexing.
-* Cách theo dõi sức khỏe index qua `FT.INFO`.
+Nếu bạn đang theo dõi các bản cập nhật mới nhất của **Redis 8**, bạn sẽ thấy một cách tiếp cận hoàn toàn mới đối với Vector Search bên cạnh RediSearch truyền thống: **Vector Sets**.
 
-👉 Ở bài tiếp theo, chúng ta sẽ bước sang kỹ thuật truy vấn cốt lõi: **[2.2 — Vector Similarity & Hybrid Search](./2-vector-similarity-and-hybrid-search.md)** — kết hợp Vector Search cùng Full-Text & Tag Filtering để tạo ra Pipeline RAG siêu chuẩn xác!
+```mermaid
+graph LR
+    subgraph RediSearch["RediSearch (FT.CREATE)"]
+        R1["Tài liệu phức tạp (JSON / Hash)"] --> R2["Tạo Schema định nghĩa (FT.CREATE)"]
+        R2 --> R3["Hỗ trợ Hybrid Search (Vector + Filter Tag/Text/Geo)"]
+    end
+
+    subgraph VectorSets["Vector Sets (Redis 8 Native)"]
+        V1["Dữ liệu nhẹ (Tương tự Sorted Set ZSET)"] --> V2["Ghi trực tiếp không cần Schema (VADD)"]
+        V2 --> V3["Truy vấn khoảng cách tức thì (VSIM)"]
+    end
+```
+
+### So sánh nhanh: `FT.CREATE` vs `Vector Sets`
+
+| Tiêu chí | RediSearch (`FT.CREATE`) | Vector Sets (`VADD` / `VSIM`) |
+| :--- | :--- | :--- |
+| **Kiểu dữ liệu** | Đánh chỉ mục thứ cấp (Secondary Index) trên JSON hoặc Hash. | Cấu trúc dữ liệu nguyên bản (Native Data Type) mới của Redis 8. |
+| **Yêu cầu khởi tạo** | Bắt buộc phải khai báo Schema (`FT.CREATE`) trước khi nạp dữ liệu. | **Không cần Schema** — lưu trữ trực tiếp giống như `ZSET`. |
+| **Cơ chế HNSW** | Cấu hình thủ công qua tham số `M`, `EF_CONSTRUCTION`. | Đồ thị HNSW được tối ưu hóa và tích hợp tự động ngầm bên trong. |
+| **Hybrid Search** | **Rất mạnh**: Kết hợp hoàn hảo giữa lọc Text, Tag, Numeric và Vector. | Giới hạn: Chỉ tìm kiếm vector thuần túy giữa các member trong set. |
+| **Trường hợp sử dụng** | **RAG Pipeline, Agent Long-term Memory** lưu kèm metadata phong phú. | Khử trùng lặp ngữ nghĩa (Deduplication), Face/Audio ID, Semantic Caching thô. |
+
+---
+
+## 9. Tổng kết & Bước tiếp theo
+
+Trong bài này, bạn đã nắm vững toàn bộ kiến trúc nền tảng của **Vector Database trên Redis**:
+* Phân biệt rõ cách biểu diễn vector: `ON HASH` (bắt buộc binary blob) vs `ON JSON` (mảng float array trực tiếp).
+* Tối ưu hóa chi phí RAM với các kiểu dữ liệu hiện đại `FLOAT16` và `BFLOAT16` (tiết kiệm $50\%$ RAM).
+* Hiểu sâu thuật toán **HNSW** ($\mathcal{O}(\log N)$) so với **FLAT**, cùng sự xuất hiện của **SVS-VAMANA** trong Redis 8.
+* Cú pháp chuẩn mực `FT.CREATE` (với `EF_CONSTRUCTION`), bảo trì index và quy trình **Zero-Downtime Blue-Green Reindexing**.
+* Biết thêm con đường tinh gọn mới với **Vector Sets (`VADD`/`VSIM`)** của Redis 8.
+
+👉 Ở bài tiếp theo: **[2.2 — Vector Similarity & Hybrid Search](./2-vector-similarity-and-hybrid-search.md)** — chúng ta sẽ đi sâu vào kỹ thuật truy vấn láng giềng gần nhất `KNN` và kết hợp bộ lọc Metadata (Pre-filter vs Post-filter) để Agent không bao giờ lấy nhầm dữ liệu của user khác!
 
 ---
 
