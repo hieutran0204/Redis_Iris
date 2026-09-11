@@ -150,7 +150,19 @@ services:
 volumes:
   redis_stack_data:
 ```
-> *(Lưu ý: Entrypoint script của image `redis-stack` tự động đọc biến `REDIS_ARGS` để chuyển vào `redis-server`. Nếu dùng image `redis` thông thường thì bắt buộc dùng **Cách 1**).*
+### 3.4. Giới hạn của Single-Node Persistence & Chiến lược Replication / Off-site Backup
+
+RDB và AOF giải quyết triệt để rủi ro mất dữ liệu khi **tiến trình Redis hoặc hệ điều hành bị reboot**. Tuy nhiên, nếu toàn bộ server gặp sự cố phần cứng nghiêm trọng (cháy ổ cứng SSD, lỗi controller, hoặc thảm họa trung tâm dữ liệu), dữ liệu RDB/AOF trên một node duy nhất đó **vẫn có nguy cơ mất trắng**.
+
+Trong các hệ thống AI Agent cấp doanh nghiệp, Persistence luôn phải đi kèm với 2 lớp bảo vệ ngoại vi:
+
+1. **Replication thời gian thực (Read-Replicas qua `replicaof`)**:
+   * Thiết lập ít nhất 1 node Replica đồng bộ dữ liệu liên tục từ Master node (`replicaof <master-ip> 6379`).
+   * Nếu node Master chết phần cứng hoàn toàn, Replica sẵn sàng được thăng cấp (failover) thành Master mới mà không gián đoạn dịch vụ.
+2. **Off-site Backup lên Cloud Object Storage (S3 / GCS / Azure Blob)**:
+   * Thiết lập một cron job định kỳ (ví dụ: mỗi đêm hoặc mỗi 6 giờ) copy file `dump.rdb` đẩy ra kho lưu trữ độc lập bên ngoài server (như Amazon S3, Google Cloud Storage).
+   * Kích hoạt cơ chế Object Versioning và Lifecycle Policy trên S3 để lưu trữ nhiều mốc thời gian (Point-in-Time Recovery), đảm bảo có thể khôi phục lại toàn bộ Agent Memory ngay cả khi toàn bộ cụm Redis bị phá hủy.
+   * *(Kiến trúc chi tiết về High Availability, Redis Sentinel, Cluster và Disaster Recovery sẽ được trình bày chuyên sâu tại **[Chương 5: Production Ops & Security](../5-production-ops-and-security/1-persistence-and-dr-for-agent-memory.md)**).*
 
 ---
 
@@ -160,6 +172,7 @@ volumes:
 > 3. **Hybrid Persistence (RDB Preamble):** Đảm bảo giữ cờ mặc định `aof-use-rdb-preamble yes` để khi kết hợp RDB + AOF, Redis khởi động lại nhanh như RDB nhưng vẫn bảo toàn dữ liệu từng giây của AOF.
 > 4. **Khởi động lại luôn ưu tiên AOF:** Khi có cả hai file `dump.rdb` và thư mục `appendonlydir/`, Redis sẽ nạp AOF làm chân lý (ground truth) để tránh mất mát dữ liệu mới nhất.
 > 5. **Độ trễ Cold-Start khi Rebuild Vector Index:** Sau khi reboot, RediSearch phải dựng lại toàn bộ đồ thị HNSW trong RAM. Với hàng triệu vector, quá trình này mất vài phút. Bắt buộc kiểm tra `FT.INFO` và tinh chỉnh Kubernetes readiness probe (`initialDelaySeconds`) để không ảnh hưởng đến Uptime SLA.
+> 6. **Bảo vệ ngoài đĩa cứng cục bộ (Off-site Backup):** RDB/AOF trên 1 server không cứu được sự cố hỏng đĩa cứng vật lý. Hệ thống Agent quy mô lớn bắt buộc kết hợp Replication thời gian thực (`replicaof`) và đẩy snapshot RDB định kỳ lên S3/GCS.
 
 ---
 

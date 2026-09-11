@@ -143,27 +143,42 @@ Redis Streams đảm bảo cơ chế phân phối là **At-Least-Once** (chắc 
 
 Nếu worker thực thi Tool thành công nhưng gặp sự cố mạng hoặc crash ngay trước dòng lệnh `XACK`, tin nhắn vẫn nằm trong PEL và sẽ được giao lại cho worker khác $\to$ **Tool bị gọi lặp lại (nguy cơ trừ tiền 2 lần, gửi 2 email xác nhận)**.
 
-👉 **Giải pháp bắt buộc: Idempotency Key (Khóa bất biến)**:
-Gắn một `task_id` duy nhất vào mỗi sự kiện. Trước khi Worker chạy Tool có tác dụng phụ (side-effects), hãy kiểm tra hoặc khóa trạng thái trên Redis:
+👉 **Giải pháp bắt buộc: Idempotency Key (Khóa bất biến chuẩn Production)**:
+Gắn một `task_id` duy nhất vào mỗi sự kiện. Để **tránh lỗi kẹt trạng thái khiến mất task vĩnh viễn** khi worker trước đó bị crash cứng (OOM-killed / mất điện đột ngột), hệ thống cần phân biệt rõ giữa 2 trạng thái: `PROCESSING` (đang xử lý) và `COMPLETED` (đã xong):
+
 ```python
-# Mẫu kiểm tra Idempotency bằng Redis SET NX
+import time
+
 task_id = message_payload["task_id"]
 idempotency_key = f"idempotency:tool:{task_id}"
 
-# SET với NX=True (chỉ set nếu chưa tồn tại) và TTL 24 giờ
-is_first_run = client.set(idempotency_key, "PROCESSING", nx=True, ex=86400)
-
-if not is_first_run:
-    # Task này đã hoặc đang được thực thi rồi -> Bỏ qua việc gọi tool, chỉ cần gửi ACK!
+# 1. Kiểm tra xem task này đã từng chạy HOÀN TẤT trong quá khứ chưa
+current_status = client.get(idempotency_key)
+if current_status == "COMPLETED":
+    # Tool đã thực thi xong trước đó -> Hoàn toàn an toàn để gửi XACK và bỏ qua!
     client.xack("agent:events", "tool_workers", message_id)
     return
 
+# 2. Chiếm quyền xử lý (Lock) với TTL ngắn (chỉ vừa đủ cho tool timeout, ví dụ 60 giây)
+#    LƯU Ý: KHÔNG ĐƯỢC đặt TTL 24h ở đây! Nếu worker bị crash cứng giữa chừng,
+#    khóa sẽ tự hết hạn sau 60s để worker khác có thể claim lại và chạy tiếp, không bị mất task.
+is_acquired = client.set(idempotency_key, "PROCESSING", nx=True, ex=60)
+
+if not is_acquired:
+    # Task đang được một worker khác thực thi song song (hoặc vừa crash chưa hết 60s)
+    # ⚠️ TUYỆT ĐỐI KHÔNG GỬI XACK Ở ĐÂY! Cứ bỏ qua, để task ở lại PEL cho vòng lặp kiểm tra tiếp.
+    return
+
 try:
+    # 3. Thực thi Tool nhạy cảm
     result = execute_sensitive_tool(...)
+
+    # 4. Khi thành công, đổi trạng thái sang COMPLETED với TTL dài (24 giờ) và gửi XACK
     client.set(idempotency_key, "COMPLETED", ex=86400)
     client.xack("agent:events", "tool_workers", message_id)
 except Exception as e:
-    client.delete(idempotency_key)  # Xóa để cho phép retry nếu lỗi tạm thời
+    # Lỗi mềm xử lý được -> Xóa ngay key để cho phép retry lập tức mà không cần chờ hết 60s
+    client.delete(idempotency_key)
     raise e
 ```
 
